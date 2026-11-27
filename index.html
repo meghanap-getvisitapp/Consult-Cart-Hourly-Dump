@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Unmatched rows finder</title>
+<style>
+  :root{
+    --bg:#f3f5f4; --panel:#ffffff; --ink:#1d2a27; --muted:#5d6b67;
+    --line:#cfd8d5; --accent:#0f6b5c; --accent-ink:#ffffff; --warn:#a4491b;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#141b19; --panel:#1c2623; --ink:#e4ece9; --muted:#9aaba6;
+      --line:#34433f; --accent:#4fc2ac; --accent-ink:#0b1713; --warn:#e69a6f; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:16px/1.5 "Segoe UI",system-ui,-apple-system,Roboto,sans-serif}
+  main{max-width:1100px;margin:0 auto;padding:28px 18px 60px}
+  h1{font-size:1.6rem;margin:0 0 4px;letter-spacing:-.01em}
+  .sub{color:var(--muted);margin:0 0 22px;max-width:75ch}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media (max-width:760px){.grid{grid-template-columns:1fr}}
+  section{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px}
+  label.t{display:block;font-weight:600;margin-bottom:2px}
+  .hint{color:var(--muted);font-size:.88rem;margin:0 0 8px}
+  textarea{width:100%;height:230px;resize:vertical;padding:10px;border:1px solid var(--line);
+    border-radius:6px;background:var(--bg);color:var(--ink);
+    font:13px/1.45 Consolas,"SF Mono",Menlo,monospace;white-space:pre;overflow:auto}
+  textarea:focus,input:focus,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+  .drop{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
+    height:230px;border:2px dashed var(--line);border-radius:6px;background:var(--bg);
+    text-align:center;padding:12px}
+  .drop.over{border-color:var(--accent)}
+  .drop input[type=file]{max-width:100%}
+  #fname{font-weight:600;word-break:break-all}
+  .count{color:var(--muted);font-size:.85rem;margin-top:6px;min-height:1.3em}
+  .opts{display:flex;flex-wrap:wrap;gap:14px 22px;align-items:end;margin:16px 0}
+  .opts label{display:flex;flex-direction:column;font-size:.88rem;color:var(--muted);gap:4px}
+  .opts input[type=text],.opts input[type=date]{padding:7px 9px;border:1px solid var(--line);
+    border-radius:6px;background:var(--panel);color:var(--ink);font:inherit;width:150px}
+  .opts .chk{flex-direction:row;align-items:center;gap:7px;color:var(--ink)}
+  button{padding:9px 18px;border-radius:6px;border:1px solid var(--accent);cursor:pointer;
+    font:600 .95rem inherit;font-family:inherit}
+  .go{background:var(--accent);color:var(--accent-ink)}
+  .ghost{background:transparent;color:var(--accent)}
+  .bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+  #status{color:var(--muted);font-size:.92rem}
+  #status.err,.count.err{color:var(--warn)}
+  #out{height:300px}
+</style>
+</head>
+<body>
+<main>
+  <h1>Unmatched rows finder</h1>
+  <p class="sub">Upload your Data A sheet, pick a date, and paste the 12-digit numbers into Data B. You get the rows of A created on that date whose phone number is not in B, with the columns you choose, ready to paste into Excel.</p>
+
+  <div class="grid">
+    <section>
+      <label class="t" for="file">Data A: Excel or CSV file</label>
+      <p class="hint">The first sheet is used. A header row is detected automatically.</p>
+      <div class="drop" id="drop">
+        <input type="file" id="file" accept=".xlsx,.xls,.xlsm,.csv">
+        <span>or drop the file here</span>
+        <span id="fname"></span>
+      </div>
+      <div class="count" id="ca">No file loaded</div>
+    </section>
+    <section>
+      <label class="t" for="b">Data B: 12-digit numbers</label>
+      <p class="hint">One number per row, pasted from Excel.</p>
+      <textarea id="b" spellcheck="false" placeholder="Paste 12-digit numbers here"></textarea>
+      <div class="count" id="cb">0 numbers</div>
+    </section>
+  </div>
+
+  <div class="opts">
+    <label>Date
+      <input type="date" id="date">
+    </label>
+    <label>Date column in A
+      <input type="text" id="dateCol" value="R">
+    </label>
+    <label>Match column in A
+      <input type="text" id="keyA" value="B">
+    </label>
+    <label>Column in B
+      <input type="text" id="keyB" value="A">
+    </label>
+    <label>Output columns
+      <input type="text" id="cols" value="B,C,J">
+    </label>
+    <label class="chk"><input type="checkbox" id="dedupe" checked> Keep one row per number</label>
+    <button class="go" id="run">Find unmatched rows</button>
+  </div>
+  <p class="hint">Columns can be letters (B, R) or numbers (2, 18). Leave the date empty to use every date in the file.</p>
+
+  <section>
+    <div class="bar">
+      <label class="t" for="out" style="margin:0">Result</label>
+      <button class="ghost" id="copy">Copy result</button>
+      <span id="status" role="status"></span>
+    </div>
+    <textarea id="out" spellcheck="false" readonly placeholder="Result appears here, tab separated"></textarea>
+  </section>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script>
+/*CORE*/
+// Split delimited text into rows of cells, honouring "quoted" cells.
+function parseDelimited(text, delim){
+  const rows = []; let row = [], cell = "", q = false;
+  text = text.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
+  for (let i = 0; i < text.length; i++){
+    const c = text[i];
+    if (q){
+      if (c === '"'){ if (text[i+1] === '"'){ cell += '"'; i++; } else q = false; }
+      else cell += c;
+    } else if (c === '"' && cell === ""){ q = true; }
+    else if (c === delim){ row.push(cell); cell = ""; }
+    else if (c === "\n"){ row.push(cell); rows.push(row); row = []; cell = ""; }
+    else cell += c;
+  }
+  if (cell !== "" || row.length) { row.push(cell); rows.push(row); }
+  return rows.filter(r => r.some(v => String(v).trim() !== ""));
+}
+
+// "R" -> 17, "aa" -> 26, "2" -> 1 (zero-based). Returns -1 if invalid.
+function colIdx(spec){
+  spec = String(spec).trim().toUpperCase();
+  if (/^\d+$/.test(spec)) return parseInt(spec, 10) - 1;
+  if (/^[A-Z]+$/.test(spec)){
+    let n = 0; for (const ch of spec) n = n * 26 + (ch.charCodeAt(0) - 64);
+    return n - 1;
+  }
+  return -1;
+}
+
+// Any phone-like value (text, number, 918890404051.0, +91 889...) -> 12-digit string.
+function normPhone(v){
+  if (typeof v === "number") v = Math.round(v).toString();
+  let s = String(v == null ? "" : v).trim().replace(/\.0+$/, "").replace(/\D/g, "");
+  if (s.length === 10) s = "91" + s;
+  else if (s.length === 11 && s[0] === "0") s = "91" + s.slice(1);
+  return s;
+}
+
+// Text, Excel serial number or dd-mm-yyyy -> "yyyy-mm-dd" (or "").
+function toISODate(v){
+  if (v == null || v === "") return "";
+  if (typeof v === "number"){
+    if (v > 20000 && v < 80000){
+      const d = new Date(Math.round((v - 25569) * 864e5));
+      return d.toISOString().slice(0, 10);
+    }
+    return "";
+  }
+  const s = String(v).trim();
+  let m = s.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})/);
+  if (m) return m[1] + "-" + m[2].padStart(2, "0") + "-" + m[3].padStart(2, "0");
+  m = s.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})/);
+  if (m) return m[3] + "-" + m[2].padStart(2, "0") + "-" + m[1].padStart(2, "0");
+  return "";
+}
+
+function cellText(v){
+  if (typeof v === "number") return Number.isInteger(v) ? String(v) : String(v);
+  return String(v == null ? "" : v).replace(/[\t\r\n]+/g, " ").trim();
+}
+
+const hasPhone = v => normPhone(v).length >= 10;
+
+function compute(A, B, o){
+  // o: {keyA, keyB, dateCol, date, cols[], dedupe}
+  let headerA = false;
+  if (A.length && !hasPhone(A[0][o.keyA])){ A = A.slice(1); headerA = true; }
+  if (B.length && !hasPhone(B[0][o.keyB])) B = B.slice(1);
+
+  const inB = new Set();
+  for (const r of B){ const k = normPhone(r[o.keyB]); if (k) inB.add(k); }
+
+  const st = {rowsA: A.length, headerA, onDate: 0, matched: 0, blank: 0, nB: inB.size};
+  const seen = new Set(), out = [];
+  for (const r of A){
+    if (o.date && toISODate(r[o.dateCol]) !== o.date) continue;
+    st.onDate++;
+    const key = normPhone(r[o.keyA]);
+    if (!key){ st.blank++; continue; }
+    if (inB.has(key)){ st.matched++; continue; }
+    if (o.dedupe){ if (seen.has(key)) continue; seen.add(key); }
+    out.push(o.cols.map(c => c === o.keyA ? key : cellText(r[c])).join("\t"));
+  }
+  st.unmatched = out.length;
+  return {out, st};
+}
+/*END*/
+
+(function(){
+  const $ = id => document.getElementById(id);
+  let dataA = null;
+
+  function setStatus(msg, err){ const s = $("status"); s.textContent = msg; s.className = err ? "err" : ""; }
+  function setCa(msg, err){ const s = $("ca"); s.textContent = msg; s.className = "count" + (err ? " err" : ""); }
+
+  function describeA(){
+    if (!dataA) return;
+    const dc = colIdx($("dateCol").value), kc = colIdx($("keyA").value);
+    let rows = dataA;
+    if (rows.length && !hasPhone(rows[0][kc])) rows = rows.slice(1);
+    const dates = rows.map(r => toISODate(r[dc])).filter(Boolean).sort();
+    setCa(rows.length + " rows loaded" +
+      (dates.length ? ", dates from " + dates[0] + " to " + dates[dates.length-1] : ", no dates found in column " + $("dateCol").value.toUpperCase()));
+  }
+
+  function loadFile(f){
+    if (!f) return;
+    $("fname").textContent = f.name;
+    setCa("Reading file...");
+    const isCsv = /\.csv$/i.test(f.name);
+    const fr = new FileReader();
+    fr.onerror = () => setCa("Could not read this file.", true);
+    fr.onload = () => {
+      try {
+        if (isCsv){
+          dataA = parseDelimited(fr.result, ",");
+        } else {
+          if (typeof XLSX === "undefined") throw new Error("The Excel reader did not load. Check your internet connection or upload a CSV.");
+          const wb = XLSX.read(fr.result, {type: "array"});
+          const ws = wb.Sheets[wb.SheetNames[0]];
+          dataA = XLSX.utils.sheet_to_json(ws, {header: 1, raw: true, defval: ""})
+            .filter(r => r.some(v => String(v).trim() !== ""));
+        }
+        describeA();
+      } catch(e){ dataA = null; setCa(e.message || "Could not read this file.", true); }
+    };
+    if (isCsv) fr.readAsText(f); else fr.readAsArrayBuffer(f);
+  }
+
+  function countB(){
+    const rows = parseDelimited($("b").value, "\t").filter(r => hasPhone(r[0]) || r.some(hasPhone));
+    $("cb").textContent = rows.length + " numbers";
+  }
+
+  function run(){
+    if (!dataA){ setStatus("Upload the Data A file first.", true); return; }
+    const B = parseDelimited($("b").value, "\t");
+    if (!B.length){ setStatus("Paste the 12-digit numbers into Data B first.", true); return; }
+    const keyA = colIdx($("keyA").value), keyB = colIdx($("keyB").value), dateCol = colIdx($("dateCol").value);
+    const cols = $("cols").value.split(",").map(colIdx).filter(n => n >= 0);
+    if (keyA < 0 || keyB < 0 || (($("date").value) && dateCol < 0)){ setStatus("Check the column letters. Use letters like B or numbers like 2.", true); return; }
+    if (!cols.length){ setStatus("Enter at least one output column, for example B,C,J.", true); return; }
+
+    const {out, st} = compute(dataA, B, {keyA, keyB, dateCol, date: $("date").value, cols, dedupe: $("dedupe").checked});
+    $("out").value = out.join("\n");
+
+    if ($("date").value && st.onDate === 0){
+      setStatus("No rows in A have the date " + $("date").value + " in column " + $("dateCol").value.toUpperCase() + ".", true);
+      return;
+    }
+    setStatus(st.unmatched + " unmatched rows. " + st.onDate + " rows" + ($("date").value ? " on " + $("date").value : "") +
+      " checked, " + st.matched + " found in B" + (st.blank ? ", " + st.blank + " skipped for an empty number" : "") + ".");
+  }
+
+  $("file").addEventListener("change", e => loadFile(e.target.files[0]));
+  const drop = $("drop");
+  ["dragenter","dragover"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
+  ["dragleave","drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
+  drop.addEventListener("drop", e => loadFile(e.dataTransfer.files[0]));
+  $("b").addEventListener("input", countB);
+  $("dateCol").addEventListener("change", describeA);
+  $("keyA").addEventListener("change", describeA);
+  $("run").addEventListener("click", run);
+  $("copy").addEventListener("click", async () => {
+    const t = $("out").value;
+    if (!t){ setStatus("Nothing to copy yet.", true); return; }
+    try { await navigator.clipboard.writeText(t); }
+    catch(e){ $("out").select(); document.execCommand("copy"); }
+    setStatus("Copied " + t.split("\n").length + " rows. Paste them into Excel, then format the number column with 0 decimal places.");
+  });
+})();
+</script>
+</body>
+</html>
